@@ -6,7 +6,36 @@
 #include <fstream>
 #include <chrono>
 #include <vector>
+#include <optional>
+#include <utility>
 #include "value.h"
+
+struct GetResult
+{
+    enum Status { OK, NIL, WRONG_TYPE };
+    Status status = NIL;
+    std::string value;
+};
+
+struct RangeResult
+{
+    bool wrong_type = false;
+    std::vector<std::string> values;
+};
+
+struct HashGetAllResult
+{
+    bool wrong_type = false;
+    std::vector<std::pair<std::string, std::string>> entries;
+};
+
+enum class LSetStatus
+{
+    OK,
+    NO_SUCH_KEY,
+    INDEX_OUT_OF_RANGE,
+    WRONG_TYPE
+};
 
 class Db
 {
@@ -25,62 +54,61 @@ private:
     void checkAutoSave();
 
 public:
-
     Db(const std::string &rdb_file = "dump.json",
-        const std::string& aof_file = "dump.aof",
+       const std::string &aof_file = "dump.aof",
        int auto_save_interval = 60);
 
     ~Db();
 
     // ============== String Commands ==============
     void set(const std::string &key, const std::string &value);
-    bool get(const std::string &key);
-    bool del(const std::string &key);
+    GetResult get(const std::string &key);
+    long long del(const std::string &key);
     bool exists(const std::string &key);
-    bool incr(const std::string &key);
-    bool incrby(const std::string &key, long long amount);
-    bool decr(const std::string &key);
-    bool decrby(const std::string &key, long long amount);
-    long long append(const std::string& key, const std::string& value);
-    long long strlen(const std::string& key);
-    void mget(const std::vector<std::string>& keys);
-    void mset(const std::vector<std::string>& keyvals);
-    std::string getrange(const std::string& key, long long start, long long end);
-    long long setrange(const std::string& key, long long offset, const std::string& value);
-    
+    std::optional<long long> incr(const std::string &key);
+    std::optional<long long> incrby(const std::string &key, long long amount);
+    std::optional<long long> decr(const std::string &key);
+    std::optional<long long> decrby(const std::string &key, long long amount);
+    long long append(const std::string &key, const std::string &value);
+    long long strlen(const std::string &key);
+    std::vector<std::optional<std::string>> mget(const std::vector<std::string> &keys);
+    bool mset(const std::vector<std::string> &keyvals);
+    std::optional<std::string> getrange(const std::string &key, long long start, long long end);
+    long long setrange(const std::string &key, long long offset, const std::string &value);
+
     // ============== Key Commands ==============
     bool expire(const std::string &key, long long seconds);
     long long ttl(const std::string &key);
     bool persist(const std::string &key);
-    std::string type(const std::string& key);
-    
+    std::string type(const std::string &key);
+
     // ============== List Commands ==============
-    long long lpush(const std::string& key, const std::vector<std::string>& values);
-    long long rpush(const std::string& key, const std::vector<std::string>& values);
-    std::string lpop(const std::string& key);
-    std::string rpop(const std::string& key);
-    long long llen(const std::string& key);
-    std::vector<std::string> lrange(const std::string& key, long long start, long long stop);
-    std::string lindex(const std::string& key, long long index);
-    bool lset(const std::string& key, long long index, const std::string& value);
-    
+    long long lpush(const std::string &key, const std::vector<std::string> &values);
+    long long rpush(const std::string &key, const std::vector<std::string> &values);
+    GetResult lpop(const std::string &key);
+    GetResult rpop(const std::string &key);
+    long long llen(const std::string &key);
+    RangeResult lrange(const std::string &key, long long start, long long stop);
+    GetResult lindex(const std::string &key, long long index);
+    LSetStatus lset(const std::string &key, long long index, const std::string &value);
+
     // ============== Set Commands ==============
-    long long sadd(const std::string& key, const std::vector<std::string>& members);
-    long long srem(const std::string& key, const std::string& member);
-    std::vector<std::string> smembers(const std::string& key);
-    bool sismember(const std::string& key, const std::string& member);
-    long long scard(const std::string& key);
-    
+    long long sadd(const std::string &key, const std::vector<std::string> &members);
+    long long srem(const std::string &key, const std::string &member);
+    RangeResult smembers(const std::string &key);
+    int sismember(const std::string &key, const std::string &member);
+    long long scard(const std::string &key);
+
     // ============== Hash Commands ==============
-    bool hset(const std::string& key, const std::string& field, const std::string& value);
-    std::string hget(const std::string& key, const std::string& field);
-    bool hdel(const std::string& key, const std::string& field);
-    std::vector<std::pair<std::string, std::string>> hgetall(const std::string& key);
-    std::vector<std::string> hkeys(const std::string& key);
-    std::vector<std::string> hvals(const std::string& key);
-    long long hlen(const std::string& key);
-    bool hexists(const std::string& key, const std::string& field);
-    
+    int hset(const std::string &key, const std::string &field, const std::string &value);
+    GetResult hget(const std::string &key, const std::string &field);
+    int hdel(const std::string &key, const std::string &field);
+    HashGetAllResult hgetall(const std::string &key);
+    RangeResult hkeys(const std::string &key);
+    RangeResult hvals(const std::string &key);
+    long long hlen(const std::string &key);
+    int hexists(const std::string &key, const std::string &field);
+
     // ============== Persistence ==============
     bool saveRDB();
     bool loadRDB();

@@ -1,0 +1,8 @@
+build/
+*.aof
+*.json
+*.log
+*.exe
+*.o
+*.obj
+.vscode/
