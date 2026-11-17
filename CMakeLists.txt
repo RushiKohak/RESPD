@@ -10,8 +10,7 @@ else()
     add_compile_options(-Wall -Wextra)
 endif()
 
-set(RESPD_SOURCES
-    main_server.cpp
+set(CORE_SOURCES
     server.cpp
     db.cpp
     resp.cpp
@@ -19,10 +18,10 @@ set(RESPD_SOURCES
 )
 
 if(WIN32)
-    list(APPEND RESPD_SOURCES wepoll.c)
+    list(APPEND CORE_SOURCES wepoll.c)
 endif()
 
-add_executable(respd ${RESPD_SOURCES})
+add_executable(respd main_server.cpp ${CORE_SOURCES})
 
 if(WIN32)
     target_link_libraries(respd PRIVATE ws2_32)

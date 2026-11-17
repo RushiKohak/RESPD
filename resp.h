@@ -7,9 +7,12 @@
 class RESP
 {
 public:
-    // Parse RESP command from client (e.g., "*3\r\n$3\r\nSET\r\n...")
+    // Parse one command from data buffer, returning tokens and setting consumed_bytes
+    static std::vector<std::string> parseOne(const std::string &data, size_t &consumed_bytes);
+
+    // Parse all commands (legacy helper or single batch)
     static std::vector<std::string> parse(const std::string &data);
-    
+
     // Encode responses to RESP format
     static std::string encodeSimpleString(const std::string &str);
     static std::string encodeError(const std::string &err);

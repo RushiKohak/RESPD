@@ -4,14 +4,19 @@
 #include <cstring>
 #include <sstream>
 
-Server::Server(Db &db, int port) : db_(db), port_(port), running_(false)
+Server::Server(Db &db, int port)
+    : db_(db), port_(port), server_socket_(INVALID_SOCKET_HANDLE), epoll_(EPOLL_INVALID_HANDLE), running_(false)
 {
-    server_socket_ = INVALID_SOCKET_HANDLE;
 }
 
 Server::~Server()
 {
     stop();
+}
+
+void Server::onTick()
+{
+    // Base implementation does nothing; overridden in active key expiry / replication
 }
 
 void Server::start()
@@ -25,8 +30,6 @@ void Server::start()
         return;
     }
 
-    std::cout << "# Socket created: " << server_socket_ << std::endl;
-
     int opt = 1;
     if (setsockopt(server_socket_, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt)) < 0)
     {
@@ -36,7 +39,13 @@ void Server::start()
         return;
     }
 
-    std::cout << "# Socket options set (SO_REUSEADDR)" << std::endl;
+    if (set_nonblocking(server_socket_) < 0)
+    {
+        std::cerr << "Failed to set server socket non-blocking" << std::endl;
+        CLOSE_SOCKET(server_socket_);
+        server_socket_ = INVALID_SOCKET_HANDLE;
+        return;
+    }
 
     struct sockaddr_in address;
     std::memset(&address, 0, sizeof(address));
@@ -52,9 +61,7 @@ void Server::start()
         return;
     }
 
-    std::cout << "# Socket bound to 0.0.0.0:" << port_ << std::endl;
-
-    if (listen(server_socket_, 10) < 0)
+    if (listen(server_socket_, 512) < 0)
     {
         std::cerr << "Failed to listen on socket" << std::endl;
         CLOSE_SOCKET(server_socket_);
@@ -62,73 +69,237 @@ void Server::start()
         return;
     }
 
-    std::cout << "# Socket listening (backlog: 10)" << std::endl;
+    epoll_ = epoll_create1(0);
+    if (epoll_ == EPOLL_INVALID_HANDLE)
+    {
+        std::cerr << "Failed to create epoll instance" << std::endl;
+        CLOSE_SOCKET(server_socket_);
+        server_socket_ = INVALID_SOCKET_HANDLE;
+        return;
+    }
+
+    server_conn_ = std::make_shared<Connection>();
+    server_conn_->fd = server_socket_;
+    server_conn_->is_server = true;
+    server_conn_->epoll_events = EPOLLIN;
+
+    if (epoll_ctl_add(epoll_, server_socket_, EPOLLIN, server_conn_.get()) < 0)
+    {
+        std::cerr << "Failed to add server socket to epoll" << std::endl;
+        epoll_close_handle(epoll_);
+        CLOSE_SOCKET(server_socket_);
+        server_socket_ = INVALID_SOCKET_HANDLE;
+        return;
+    }
 
     running_ = true;
-    std::cout << "# Respd server started on port " << port_ << std::endl;
-    std::cout << "# Ready to accept connections" << std::endl;
-    std::cout << "# Waiting for clients..." << std::endl;
+    std::cout << "# Respd server started on port " << port_ << " (single-threaded epoll)" << std::endl;
+
+    const int MAX_EVENTS = 128;
+    struct epoll_event events[MAX_EVENTS];
 
     while (running_)
+    {
+        int n = epoll_wait(epoll_, events, MAX_EVENTS, 10);
+
+        for (int i = 0; i < n; i++)
+        {
+            Connection *conn = static_cast<Connection *>(events[i].data.ptr);
+            if (!conn)
+                continue;
+
+            if (conn->is_server)
+            {
+                handleAccept();
+            }
+            else
+            {
+                uint32_t ev = events[i].events;
+
+                if (ev & (EPOLLERR | EPOLLHUP))
+                {
+                    closeConnection(conn->fd);
+                    continue;
+                }
+
+                if (ev & EPOLLIN)
+                {
+                    handleRead(conn);
+                }
+
+                if (connections_.find(conn->fd) != connections_.end() && (ev & EPOLLOUT))
+                {
+                    handleWrite(conn);
+                }
+            }
+        }
+
+        onTick();
+    }
+}
+
+void Server::handleAccept()
+{
+    while (true)
     {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
 
-        socket_t client_socket = accept(server_socket_, (struct sockaddr *)&client_addr, &client_len);
-
-        if (!SOCKET_IS_VALID(client_socket))
+        socket_t client_fd = accept(server_socket_, (struct sockaddr *)&client_addr, &client_len);
+        if (!SOCKET_IS_VALID(client_fd))
         {
-            if (running_)
-                std::cerr << "Failed to accept connection" << std::endl;
-            continue;
-        }
-
-        char client_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-
-        std::cout << "# Client connected from " << client_ip 
-                  << ":" << ntohs(client_addr.sin_port) 
-                  << " (socket: " << client_socket << ")" << std::endl;
-
-        std::thread client_thread(&Server::handleClient, this, client_socket);
-        client_thread.detach();
-    }
-}
-
-void Server::handleClient(socket_t client_socket)
-{
-    char buffer[4096];
-
-    while (running_)
-    {
-        std::memset(buffer, 0, sizeof(buffer));
-
-        int bytes_read = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-
-        if (bytes_read <= 0)
-        {
+            int err = get_last_socket_error();
+            if (WOULD_BLOCK(err))
+            {
+                break;
+            }
             break;
         }
 
-        std::string data(buffer, bytes_read);
-
-        std::vector<std::string> tokens = RESP::parse(data);
-
-        if (tokens.empty())
+        if (set_nonblocking(client_fd) < 0)
         {
-            std::string response = RESP::encodeError("ERR invalid command format");
-            send(client_socket, response.c_str(), static_cast<int>(response.length()), 0);
+            CLOSE_SOCKET(client_fd);
             continue;
         }
 
-        std::string response = executeCommand(tokens);
-        send(client_socket, response.c_str(), static_cast<int>(response.length()), 0);
-    }
+        auto conn = std::make_shared<Connection>();
+        conn->fd = client_fd;
+        conn->is_server = false;
+        conn->epoll_events = EPOLLIN;
 
-    CLOSE_SOCKET(client_socket);
+        connections_[client_fd] = conn;
+
+        if (epoll_ctl_add(epoll_, client_fd, EPOLLIN, conn.get()) < 0)
+        {
+            connections_.erase(client_fd);
+            CLOSE_SOCKET(client_fd);
+        }
+    }
 }
 
-std::string Server::executeCommand(const std::vector<std::string> &tokens)
+void Server::handleRead(Connection *conn)
+{
+    char buf[8192];
+
+    while (true)
+    {
+        int bytes = recv(conn->fd, buf, sizeof(buf), 0);
+        if (bytes > 0)
+        {
+            conn->read_buffer.append(buf, static_cast<size_t>(bytes));
+        }
+        else if (bytes == 0)
+        {
+            closeConnection(conn->fd);
+            return;
+        }
+        else
+        {
+            int err = get_last_socket_error();
+            if (WOULD_BLOCK(err))
+            {
+                break;
+            }
+            closeConnection(conn->fd);
+            return;
+        }
+    }
+
+    processReadBuffer(conn);
+}
+
+void Server::processReadBuffer(Connection *conn)
+{
+    while (true)
+    {
+        size_t consumed = 0;
+        std::vector<std::string> tokens = RESP::parseOne(conn->read_buffer, consumed);
+        if (consumed == 0)
+        {
+            break; // Incomplete command, wait for more data
+        }
+
+        conn->read_buffer.erase(0, consumed);
+
+        if (tokens.empty())
+        {
+            continue;
+        }
+
+        std::string response = executeCommand(tokens, conn);
+        if (!response.empty())
+        {
+            conn->write_buffer.append(response);
+        }
+    }
+
+    if (!conn->write_buffer.empty())
+    {
+        handleWrite(conn);
+    }
+}
+
+void Server::handleWrite(Connection *conn)
+{
+    while (!conn->write_buffer.empty())
+    {
+        int sent = send(conn->fd, conn->write_buffer.data(), static_cast<int>(conn->write_buffer.size()), 0);
+        if (sent > 0)
+        {
+            conn->write_buffer.erase(0, static_cast<size_t>(sent));
+        }
+        else if (sent < 0)
+        {
+            int err = get_last_socket_error();
+            if (WOULD_BLOCK(err))
+            {
+                break; // Socket send buffer full, wait for next EPOLLOUT
+            }
+            closeConnection(conn->fd);
+            return;
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    if (conn->write_buffer.empty())
+    {
+        if (conn->close_after_write)
+        {
+            closeConnection(conn->fd);
+            return;
+        }
+
+        if (conn->epoll_events & EPOLLOUT)
+        {
+            conn->epoll_events = EPOLLIN;
+            epoll_ctl_mod(epoll_, conn->fd, EPOLLIN, conn);
+        }
+    }
+    else
+    {
+        if (!(conn->epoll_events & EPOLLOUT))
+        {
+            conn->epoll_events = EPOLLIN | EPOLLOUT;
+            epoll_ctl_mod(epoll_, conn->fd, EPOLLIN | EPOLLOUT, conn);
+        }
+    }
+}
+
+void Server::closeConnection(socket_t fd)
+{
+    auto it = connections_.find(fd);
+    if (it != connections_.end())
+    {
+        epoll_ctl_del(epoll_, fd);
+        CLOSE_SOCKET(fd);
+        connections_.erase(it);
+    }
+}
+
+std::string Server::executeCommand(const std::vector<std::string> &tokens, Connection *conn)
 {
     if (tokens.empty())
         return RESP::encodeError("ERR empty command");
@@ -150,6 +321,16 @@ std::string Server::executeCommand(const std::vector<std::string> &tokens)
     else if (cmd == "ECHO" && tokens.size() >= 2)
     {
         return RESP::encodeBulkString(tokens[1]);
+    }
+
+    // Handle QUIT command
+    else if (cmd == "QUIT")
+    {
+        if (conn)
+        {
+            conn->close_after_write = true;
+        }
+        return RESP::encodeSimpleString("OK");
     }
 
     // Handle SET command
@@ -542,11 +723,24 @@ std::string Server::executeCommand(const std::vector<std::string> &tokens)
 void Server::stop()
 {
     running_ = false;
+
+    for (auto &pair : connections_)
+    {
+        CLOSE_SOCKET(pair.first);
+    }
+    connections_.clear();
+
     if (SOCKET_IS_VALID(server_socket_))
     {
-        std::cout << "# Closing server socket..." << std::endl;
         CLOSE_SOCKET(server_socket_);
         server_socket_ = INVALID_SOCKET_HANDLE;
     }
+
+    if (epoll_ != EPOLL_INVALID_HANDLE)
+    {
+        epoll_close_handle(epoll_);
+        epoll_ = EPOLL_INVALID_HANDLE;
+    }
+
     cleanup_network();
 }
