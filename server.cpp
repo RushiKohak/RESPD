@@ -226,6 +226,12 @@ void Server::processReadBuffer(Connection *conn)
             continue;
         }
 
+        if (tokens[0] == "__RESP_ERROR__")
+        {
+            conn->write_buffer.append(RESP::encodeError("ERR Protocol error"));
+            continue;
+        }
+
         std::string response = executeCommand(tokens, conn);
         if (!response.empty())
         {

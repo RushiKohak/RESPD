@@ -24,7 +24,7 @@ std::vector<std::string> RESP::parseOne(const std::string &data, size_t &consume
             arrayLen = std::stoi(data.substr(pos, end - pos));
         } catch (...) {
             consumed_bytes = end + 2;
-            return {};
+            return {"__RESP_ERROR__"};
         }
 
         pos = end + 2;
@@ -32,7 +32,7 @@ std::vector<std::string> RESP::parseOne(const std::string &data, size_t &consume
         if (arrayLen <= 0)
         {
             consumed_bytes = pos;
-            return {};
+            return {"__RESP_ERROR__"};
         }
 
         std::vector<std::string> result;
@@ -48,8 +48,13 @@ std::vector<std::string> RESP::parseOne(const std::string &data, size_t &consume
             if (data[pos] != '$')
             {
                 // Malformed RESP element
-                consumed_bytes = pos;
-                return {};
+                size_t lineEnd = data.find("\r\n", pos);
+                if (lineEnd == std::string::npos)
+                {
+                    return {}; // Wait for full malformed line before consuming
+                }
+                consumed_bytes = lineEnd + 2;
+                return {"__RESP_ERROR__"};
             }
 
             pos++; // Skip '$'
@@ -64,7 +69,7 @@ std::vector<std::string> RESP::parseOne(const std::string &data, size_t &consume
                 bulkLen = std::stoi(data.substr(pos, end - pos));
             } catch (...) {
                 consumed_bytes = end + 2;
-                return {};
+                return {"__RESP_ERROR__"};
             }
             pos = end + 2;
 
