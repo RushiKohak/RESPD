@@ -75,9 +75,10 @@ Respd is an in-memory data structure store speaking the Redis Serialization Prot
 
 ## Build Instructions
 
-Requirements: CMake 3.16 or newer and a C++17 compiler. Nothing else — on Linux the standard
-library is enough, and on Windows `wepoll.c` is compiled in place of `epoll` (MSVC or MinGW both
-work; the CMake build links `ws2_32`).
+Requirements: CMake 3.16 or newer and a C++17 compiler. Nothing else — the standard library is
+enough. On Windows, `wepoll.c` is compiled in place of `epoll` and the build links `ws2_32`; that
+path uses the same sources through `net_compat.h`, but the build measured and tested here is the
+Linux one.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
