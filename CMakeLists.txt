@@ -4,6 +4,12 @@ project(Respd VERSION 1.0.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# A plain `cmake -B build` would otherwise build unoptimised, which makes a throughput benchmark
+# meaningless. Default to Release so the binary is -O3 unless the caller asks for something else.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 if(MSVC)
     add_compile_options(/W4)
 else()
